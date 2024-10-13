@@ -1,0 +1,1 @@
+copy D:\DDK\lib\alpha\checked\fxmemmap.sys D:\winnt\system32\drivers\

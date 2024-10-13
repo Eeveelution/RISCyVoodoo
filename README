@@ -1,0 +1,1 @@
+Compile with NT4 DDK using `build`. Copy driver to system32\drivers, make sure fxmemmap.ini is in the registry `regini fxmemmap.ini` then start with `net start fxmemmap`
