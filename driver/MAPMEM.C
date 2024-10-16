@@ -121,6 +121,8 @@ FxU32 __stdcall sst1InitRead32(FxU32 *addr)
 
 #define IGET(A)    sst1InitRead32((FxU32 *) &(A))
 
+static void* VOODOOPTR;
+
 NTSTATUS
 DriverEntry(
     IN PDRIVER_OBJECT  DriverObject,
@@ -257,23 +259,22 @@ Return Value:
 
             addressHasBeenTranslated = HalTranslateBusAddress(PCIBus, voodooBus, allocatedResources->List[0].PartialResourceList.PartialDescriptors[0].u.Memory.Start, &isInIoSpace, &translatedAddress);
 
-            DbgPrint("Address has been translated: %d; Is in IO Space: %d\n", addressHasBeenTranslated, isInIoSpace);
+            DbgPrint("Address has been translated: %d; Is in IO Space: %d; translatedAddress: 0x%x\n", addressHasBeenTranslated, isInIoSpace, translatedAddress.LowPart);
 
             if(!addressHasBeenTranslated) {
                 DbgPrint("Address could not be translated!\n");
 
                 return ntStatus;
             } else {
-                unsigned char* rawPciData = (unsigned char*)PciData;
-                unsigned int* initEnableReg = (unsigned int*)(rawPciData + 0x40);
-                unsigned int* busSnoop0 = (unsigned int*)(rawPciData + 0x44);
-                unsigned int* busSnoop1 = (unsigned int*)(rawPciData + 0x48);
-                unsigned int existingPciInitEnable = (*initEnableReg);
+                // unsigned char* rawPciData = (unsigned char*)PciData;
+                // unsigned int* initEnableReg = (unsigned int*)(rawPciData + 0x40);
+                // unsigned int* busSnoop0 = (unsigned int*)(rawPciData + 0x44);
+                // unsigned int* busSnoop1 = (unsigned int*)(rawPciData + 0x48);
+                // unsigned int existingPciInitEnable = (*initEnableReg);
 
                 DbgPrint("Trying to map to virtual address\n");
 
                 virtualAddress = MmMapIoSpace(translatedAddress, 16 * 1024 * 1024, MmNonCached);
-                
 
                 if(virtualAddress == NULL) {
                     DbgPrint("Virtual address is null!\n");
@@ -296,12 +297,15 @@ Return Value:
                         if(userModeAccessiblePtr != NULL) {
                             ULONG setData;
 
+                            VOODOOPTR = userModeAccessiblePtr;
+
                             PciData->Command = BIT(1);
 
-                            setData = HalSetBusData(PCIConfiguration, voodooBus, voodooDeviceNum, PciData, PCI_COMMON_HDR_LENGTH);
+                            setData = HalSetBusDataByOffset(PCIConfiguration, voodooBus, voodooDeviceNum, &PciData->Command, 0x4, 0x4);
+
                             DbgPrint("Enabled Memory Access to SST-1: %d\n", setData);
                             
-                            DbgPrint("User Accessible Pointer: 0x%x", userModeAccessiblePtr);
+                            DbgPrint("User Accessible Pointer: 0x%x\n", userModeAccessiblePtr);
 
                             sst = (SstRegs*) userModeAccessiblePtr;
 
@@ -637,6 +641,10 @@ Return Value:
     inIoSpace = inIoSpace2 = ppmi->AddressSpace;
     length                 = ppmi->Length;
 
+    *((PVOID *) IoBuffer) = VOODOOPTR;
+
+    return;
+
 
     //
     // Get a pointer to physical memory...
@@ -751,12 +759,12 @@ Return Value:
     // go through the mapping mechanism
     //
 
-    if (inIoSpace)
-    {
-        *((PVOID *) IoBuffer) = (PVOID) physicalAddressBase.LowPart;
-    }
+    // if (inIoSpace)
+    // {
+    //     *((PVOID *) IoBuffer) = (PVOID) physicalAddressBase.LowPart;
+    // }
 
-    else
+    // else
     {
         //
         // initialize view base that will receive the physical mapped

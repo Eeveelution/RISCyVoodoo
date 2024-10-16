@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "MAPMEM.C": "cpp"
+        "MAPMEM.C": "cpp",
+        "MAPTEST.C": "cpp"
     }
 }

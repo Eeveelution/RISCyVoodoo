@@ -1,3 +1,6 @@
-obj/
-build.log
-build.wrn
+**/obj/
+**/build.log
+**/build.wrn
+**/build.err
+**/checked/
+**/free/
