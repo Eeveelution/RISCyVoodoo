@@ -33,6 +33,7 @@ Revision History:
 #include "mapmem.h"
 #include "stdarg.h"
 
+
 #define _M_ALPHA
 #define _ALPHA_
 
@@ -60,6 +61,13 @@ MapMemMapTheMemory(
 
 
 #define MapMemKdPrint(arg) DbgPrint arg
+
+FxU32 __stdcall sst1InitRead32(FxU32 *addr)
+{
+    return(*addr);
+}
+
+#define IGET(A)    sst1InitRead32((FxU32 *) &(A))
 
 void DetectVoodooCvgCard(ULONG *outBus, ULONG *deviceNum, USHORT *deviceId) {
     PCI_SLOT_NUMBER SlotNumber;
@@ -106,127 +114,14 @@ void DetectVoodooCvgCard(ULONG *outBus, ULONG *deviceNum, USHORT *deviceId) {
                 *deviceNum = i;
                 *deviceId = PciData->DeviceID;
             }
-            // DbgPrint("Bus: %d; Device Number: %d; Vendor Id: %x; Device ID: %x; Address: %x\n", bus, i, PciData->VendorID, PciData->DeviceID, PciData->u.type0.BaseAddresses[0]);
 		}
 	}
 
     end:;
 }
-# define P6FENCE asm volatile("mb" ::: "memory");
-
-FxU32 __stdcall sst1InitRead32(FxU32 *addr)
-{
-    return(*addr);
-}
-
-#define IGET(A)    sst1InitRead32((FxU32 *) &(A))
 
 static void* VOODOOPTR;
-static void* MapRegisterBase;
-
-typedef struct {
-    PMDL   IoBufferMdl;
-    KEVENT AllocateAdapterChannelEvent;
-    PDEVICE_OBJECT DeviceObject;
-    PADAPTER_OBJECT AdapterObject;
-    ULONG NumberOfMapRegisters;
-    PVOID MapRegisterBase;
-} VOODOO_DMA_EXTENSION;
-
-
-IO_ALLOCATION_ACTION
-VoodooAllocateAdapterChannel(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN PIRP Irp,
-    IN PVOID MapRegisterBase,
-    IN PVOID Context			// Pointer to hwDeviceExtension
-) {
-    VOODOO_DMA_EXTENSION* dmaExt = (VOODOO_DMA_EXTENSION*) Context;
-
-    DbgPrint("dmaExt: %x\n", dmaExt);
-
-    dmaExt->MapRegisterBase = MapRegisterBase;
-
-    DbgPrint("Setting event\n");
-
-    KeSetEvent(&dmaExt->AllocateAdapterChannelEvent, 0L, FALSE);
-
-    DbgPrint("KeepObject\n");
-
-    return (KeepObject);
-}
-
-VOODOO_DMA_EXTENSION* dma_init(PDEVICE_OBJECT device) {
-    VOODOO_DMA_EXTENSION* dmaExt = (VOODOO_DMA_EXTENSION*) ExAllocatePool(NonPagedPool, sizeof(VOODOO_DMA_EXTENSION));
-    DEVICE_DESCRIPTION deviceDesc;
-    ULONG numberOfMapRegisters;
-    KIRQL oldIrql;
-
-    if(dmaExt == NULL) {
-        return FALSE;
-    }
-
-    dmaExt->DeviceObject = device;
-
-    RtlZeroMemory(&deviceDesc, sizeof(DEVICE_DESCRIPTION));
-
-    deviceDesc.Version           = DEVICE_DESCRIPTION_VERSION;
-    deviceDesc.Master            = TRUE;
-    deviceDesc.ScatterGather     = FALSE;
-    deviceDesc.DemandMode        = FALSE;
-    deviceDesc.AutoInitialize    = FALSE;
-    deviceDesc.Dma32BitAddresses = TRUE;
-    deviceDesc.BusNumber         = 0;
-    deviceDesc.InterfaceType     = PCIBus;
-    deviceDesc.DmaWidth          = Width32Bits;
-    deviceDesc.DmaSpeed          = MaximumDmaSpeed;
-    deviceDesc.MaximumLength     = 16 * 1024 * 1024; // 16MB registers and direct texture memory access
-
-
-    DbgPrint("Getting adapter\n");
-
-    //returns numberOFMapRegisters
-    dmaExt->AdapterObject = HalGetAdapter(&deviceDesc, &numberOfMapRegisters);
-
-    DbgPrint("AdapterObject: %x; numberOfMapRegisters: %d\n", dmaExt->AdapterObject, numberOfMapRegisters);
-
-    if( !dmaExt->AdapterObject ) {
-        return FALSE;
-    }
-
-    DbgPrint("Initializing event\n");
-
-    //Create Event
-    KeInitializeEvent(&dmaExt->AllocateAdapterChannelEvent, NotificationEvent, FALSE);
-
-    if(numberOfMapRegisters == 0) {
-        return FALSE;
-    }
-
-    DbgPrint("Resetting event\n");
-
-    KeResetEvent(&dmaExt->AllocateAdapterChannelEvent);
-
-    DbgPrint("Raising IRQL\n");
-
-    KeRaiseIrql(DISPATCH_LEVEL, &oldIrql);
-
-    DbgPrint("IoAllocateAdapterChannel\n");
-
-    IoAllocateAdapterChannel(dmaExt->AdapterObject, dmaExt->DeviceObject, numberOfMapRegisters, VoodooAllocateAdapterChannel, dmaExt);
-
-    DbgPrint("Lowering IRQL\n");
-
-    KeLowerIrql(oldIrql);
-
-    DbgPrint("Lowering IRQL done, waiting for event\n");
-
-    KeWaitForSingleObject(&dmaExt->AllocateAdapterChannelEvent, Executive, KernelMode, FALSE, (PLARGE_INTEGER) NULL);
-
-    DbgPrint("wait done, init done\n");
-
-    return dmaExt;
-}       
+static void* MapRegisterBase;   
 
 NTSTATUS
 DriverEntry(
@@ -265,6 +160,7 @@ Return Value:
     USHORT voodooDeviceId;
     PCM_RESOURCE_LIST allocatedResources;
     
+    
    
     //
     // Create an EXCLUSIVE device object (only 1 thread at a time
@@ -285,7 +181,15 @@ Return Value:
 
     if (NT_SUCCESS(ntStatus))
     {
-        VOODOO_DMA_EXTENSION* voodooDma;
+        ULONG voodooBus, voodooDeviceNum;
+        USHORT voodooDeviceId;
+        PCI_SLOT_NUMBER slotNumber;
+        PCI_COMMON_CONFIG pciConfig;
+        ULONG i;
+        PCM_RESOURCE_LIST allocatedResources;
+        ULONG isInIoSpace = 4;
+        PHYSICAL_ADDRESS voodooPhysAddr;
+        PVOID mappedAddress;
         //
         // Create dispatch points for device control, create, close.
         //
@@ -294,9 +198,7 @@ Return Value:
         DriverObject->MajorFunction[IRP_MJ_CLOSE]          =
         DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = MapMemDispatch;
         DriverObject->DriverUnload                         = MapMemUnload;
-
-
-
+        
         //
         // Create a symbolic link, e.g. a name that a Win32 app can specify
         // to open the device
@@ -322,161 +224,135 @@ Return Value:
 
         DetectVoodooCvgCard(&voodooBus, &voodooDeviceNum, &voodooDeviceId);
 
-        DbgPrint("Assinging resources for Voodoo card!\n");
+        slotNumber.u.bits.DeviceNumber = voodooDeviceNum;
+        slotNumber.u.bits.FunctionNumber = 0;
+        slotNumber.u.bits.Reserved = 0;
 
         ntStatus = HalAssignSlotResources(RegistryPath, NULL, DriverObject, deviceObject, PCIBus, voodooBus, voodooDeviceNum, &allocatedResources);
 
-        DbgPrint("Resources Allocated: %d\n", allocatedResources->Count);
+        if(!NT_SUCCESS(ntStatus)) {
+            DbgPrint("HalAssignSlotResources failed\n");
 
-        DbgPrint("Initializing DMA Extension\n");
-
-        voodooDma = dma_init(deviceObject);
-
-        DbgPrint("DMA Extension initialized!\n");
-
-        if(!NT_SUCCESS(ntStatus) || allocatedResources->Count == 0) {
-            DbgPrint("Failed to HalAssignSlotResources! NtStatus: %d\n", ntStatus);
-
-            IoDeleteDevice (deviceObject);
-
-            return ntStatus;
-        } else {
-            PCI_SLOT_NUMBER SlotNumber;
-	        PPCI_COMMON_CONFIG PciData;
-            UCHAR buffer[PCI_COMMON_HDR_LENGTH + 4];
-            PHYSICAL_ADDRESS translatedAddress;
-            BOOLEAN addressHasBeenTranslated;
-            PVOID virtualAddress;
-            ULONG isInIoSpace = 4; //ALPHA SPECIFIC DENSE MEMORY SPACE
-            SstRegs* sst;
-
-            PciData = (PPCI_COMMON_CONFIG) buffer;
-
-            SlotNumber.u.bits.DeviceNumber = voodooDeviceNum;
-            SlotNumber.u.bits.FunctionNumber = 0;
-            SlotNumber.u.bits.Reserved = 0;
-
-            HalGetBusData(
-				PCIConfiguration,
-				voodooBus,
-				SlotNumber.u.AsULONG,
-				PciData,
-				PCI_COMMON_HDR_LENGTH + 4
-			);
-
-            DbgPrint("Voodoo Card Configured at: Low Part: 0x%x High Part: 0x%x\n", 
-                allocatedResources->List[0].PartialResourceList.PartialDescriptors[0].u.Memory.Start.LowPart, 
-                allocatedResources->List[0].PartialResourceList.PartialDescriptors[0].u.Memory.Start.HighPart
-            );
-
-            addressHasBeenTranslated = HalTranslateBusAddress(PCIBus, voodooBus, allocatedResources->List[0].PartialResourceList.PartialDescriptors[0].u.Memory.Start, &isInIoSpace, &translatedAddress);
-
-            DbgPrint("Address has been translated: %d; Is in IO Space: %d; translatedAddress: 0x%x\n", addressHasBeenTranslated, isInIoSpace, translatedAddress.LowPart);
-
-            if(!addressHasBeenTranslated) {
-                DbgPrint("Address could not be translated!\n");
-
-                return ntStatus;
-            } else {
-                // unsigned char* rawPciData = (unsigned char*)PciData;
-                // unsigned int* initEnableReg = (unsigned int*)(rawPciData + 0x40);
-                // unsigned int* busSnoop0 = (unsigned int*)(rawPciData + 0x44);
-                // unsigned int* busSnoop1 = (unsigned int*)(rawPciData + 0x48);
-                // unsigned int existingPciInitEnable = (*initEnableReg);
-
-                DbgPrint("Trying to map to virtual address\n");
-
-                virtualAddress = MmMapIoSpace(translatedAddress, 16 * 1024 * 1024, MmNonCached);
-
-                if(virtualAddress == NULL) {
-                    DbgPrint("Virtual address is null!\n");
-                } else {
-                    PMDL pMdl;
-
-                    DbgPrint("Virtual Address: 0x%x\n", virtualAddress);
-
-                    pMdl = IoAllocateMdl(virtualAddress, 16 * 1024 * 1024, FALSE, FALSE, NULL);
-
-                    DbgPrint("pMdl: %x\n", pMdl);
-
-                    if(pMdl) {
-                        PHYSICAL_ADDRESS deviceAddr;
-                        ULONG setData;
-                        ULONG outBufferSize = 0;
-
-                        DbgPrint("MmProbeAndLockPages\n");
-
-                        MmProbeAndLockPages(pMdl, KernelMode, IoModifyAccess);
-
-                        
-                        DbgPrint("IoMapTransfer\n");
-
-                        deviceAddr = IoMapTransfer(voodooDma->AdapterObject, pMdl, voodooDma->MapRegisterBase, MmGetMdlVirtualAddress(pMdl), &outBufferSize, TRUE);
-
-                        DbgPrint("deviceAddr: %x\n", deviceAddr.LowPart);
-
-                        PciData->LatencyTimer = 0xFF;
-                        PciData->Command = 6; // bus master, memory space enable
-                        
-                        setData = HalSetBusData(PCIConfiguration, voodooBus, voodooDeviceNum, &PciData, PCI_COMMON_HDR_LENGTH);
-                        DbgPrint("Enabled Bus master and memory space enable to Voodoo: %d\n", setData);
-
-                        sst = (SstRegs*) virtualAddress;
-
-                        DbgPrint("sst addr: 0x%x\n", sst);
-                        DbgPrint("sst status: %d\n", IGET(sst->status));
-
-
-                        // PVOID userModeAccessiblePtr;
-
-                        // DbgPrint("IoAllocateMdl succeded.\n");
-
-                        // MmBuildMdlForNonPagedPool(pMdl);
-
-                        // userModeAccessiblePtr = MmMapLockedPages(pMdl, UserMode);
-
-                        // if(userModeAccessiblePtr != NULL) {
-                        //     VOODOOPTR = userModeAccessiblePtr;
-
-                        //     PciData->Command = BIT(1);
-
-                        //     setData = HalSetBusDataByOffset(PCIConfiguration, voodooBus, voodooDeviceNum, &PciData->Command, 0x4, 0x4);
-
-                        //     DbgPrint("Enabled Memory Access to SST-1: %d\n", setData);
-                            
-                        //     DbgPrint("User Accessible Pointer: 0x%x\n", userModeAccessiblePtr);
-
-                        //     sst = (SstRegs*) userModeAccessiblePtr;
-
-                        //     DbgPrint("sst addr: 0x%x\n", sst);
-                            
-                        //     DbgPrint("sst status: %d\n", IGET(sst->status));
-
-                        //     // if(IGET(sst->fbiInit1) & SST_EN_SCANLINE_INTERLEAVE) {
-                        //     //     DbgPrint("Disabling SLI.\n");
-                        //     //     DbgPrint("Attempting to disable SLI Snooping\nExisting PCI_INIT_ENABLE: %d\n", existingPciInitEnable);
-
-                        //     //     *initEnableReg = existingPciInitEnable & ~(SST_SCANLINE_SLV_OWNPCI | SST_SCANLINE_SLI_SLV | SST_SLI_SNOOP_EN | SST_SLI_SNOOP_MEMBASE);
-
-                        //     //     setData = HalSetBusData(PCIConfiguration, voodooBus, voodooDeviceNum, PciData, PCI_COMMON_HDR_LENGTH + 4);
-                        //     //     DbgPrint("setData: %d\n", setData);
-
-                        //     //     sst->fbiInit1 &= ~SST_EN_SCANLINE_INTERLEAVE;
-
-                        //     //     DbgPrint("SST Status: %d\n", sst->status);
-                        //     // }
-                        // } else {
-                        //     DbgPrint("MmMapLockedPages failed!\n");
-                        // }
-                    } else {
-                        MmUnmapIoSpace(virtualAddress, 16 * 1024 * 1024);
-                        DbgPrint("IoAllocateMdl failed!\n");
-                    } 
-                }
-            }
-        
+            return;
         }
 
+        DbgPrint("Assigned Resources: %d\n", allocatedResources->Count);
+
+        if(allocatedResources->Count == 0) {
+            return;
+        }
+        
+        DbgPrint("Voodoo Card Configured at: Low Part: 0x%x High Part: 0x%x\n", 
+            allocatedResources->List[0].PartialResourceList.PartialDescriptors[0].u.Memory.Start.LowPart, 
+            allocatedResources->List[0].PartialResourceList.PartialDescriptors[0].u.Memory.Start.HighPart
+        );
+
+        i = HalGetBusData(PCIConfiguration, voodooBus, slotNumber.u.AsULONG, &pciConfig, PCI_COMMON_HDR_LENGTH);
+
+        DbgPrint("HalGetBusData: %d\n", i);
+
+        pciConfig.LatencyTimer = 0xFF;
+        pciConfig.Command = 0x0006; // bus master & memory space enable
+
+        i = HalSetBusData(PCIConfiguration, voodooBus, slotNumber.u.AsULONG, &pciConfig, PCI_COMMON_HDR_LENGTH);
+
+        DbgPrint("HalSetBusData: %d\n", i);
+
+        ntStatus = HalTranslateBusAddress(PCIBus, voodooBus, allocatedResources->List[0].PartialResourceList.PartialDescriptors[0].u.Memory.Start, &isInIoSpace, &voodooPhysAddr);
+
+        if(!ntStatus) {
+            DbgPrint("HalTranslateBusAddress failed.\n");
+
+            return;
+        }
+
+        DbgPrint("Voodoo physical address: 0x%x; IsInIoSpace: %d\n", voodooPhysAddr.LowPart, isInIoSpace);
+
+        // returns virtual address
+        mappedAddress = MmMapIoSpace(voodooPhysAddr, 16 * 1024 * 1024, MmNonCached);
+
+        DbgPrint("Mapped address: 0x%x\n", mappedAddress);
+
+        if(mappedAddress == NULL) {
+            return;
+        }
+
+        {
+            ULONG isInIoSpace1 = 4;
+            ULONG isInIoSpace2 = 4;
+            PHYSICAL_ADDRESS basePlusLength;
+            BOOLEAN successBase, successEnd;
+
+            PHYSICAL_ADDRESS baseAddr, endAddr;
+
+            PVOID virtualAddress;
+
+            OBJECT_ATTRIBUTES  objectAttributes;
+            HANDLE             physicalMemoryHandle  = NULL;
+            PVOID              PhysicalMemorySection = NULL;
+
+            ULONG Length = 16 * 1024 * 1024;
+
+            basePlusLength.QuadPart = voodooPhysAddr.QuadPart + (16 * 1024 * 1024); 
+
+            successBase = HalTranslateBusAddress(PCIBus, voodooBus, voodooPhysAddr, &isInIoSpace1, &baseAddr);
+            successEnd = HalTranslateBusAddress(PCIBus, voodooBus, basePlusLength, &isInIoSpace2, &endAddr);
+
+            if(!successBase) {
+                DbgPrint("Translating base address failed.\n");
+
+                return;
+            }
+
+            if(!successEnd) {
+                DbgPrint("Translating end address failed.\n");
+
+                return;
+            }
+
+            DbgPrint("baseAddr: 0x%x\n", baseAddr.LowPart);
+            DbgPrint("endAddr: 0x%x\n", endAddr.LowPart);
+
+            DbgPrint("SST Status: %d\n", ((SstRegs*)mappedAddress)->status);
+
+            // ntStatus = ZwOpenSection (&physicalMemoryHandle,
+            //                   SECTION_ALL_ACCESS,
+            //                   &objectAttributes);
+
+            // if (!NT_SUCCESS(ntStatus))
+            // {
+            //     MapMemKdPrint (("MAPMEM.SYS: ZwOpenSection failed\n"));
+
+            //     return;
+            // }
+
+            // ntStatus = ObReferenceObjectByHandle (physicalMemoryHandle,
+            //                                     SECTION_ALL_ACCESS,
+            //                                     (POBJECT_TYPE) NULL,
+            //                                     KernelMode,
+            //                                     &PhysicalMemorySection,
+            //                                     (POBJECT_HANDLE_INFORMATION) NULL);
+
+            // if (!NT_SUCCESS(ntStatus))
+            // {
+            //     MapMemKdPrint (("MAPMEM.SYS: ObReferenceObjectByHandle failed\n"));
+
+            //     return;
+            // }
+
+            // ntStatus = ZwMapViewOfSection(physicalMemoryHandle,
+            //                           NtCurrentProcess(),
+            //                           &mappedAddress,
+            //                           0L,
+            //                           Length,
+            //                           &baseAddr,
+            //                           &Length,
+            //                           ViewUnmap,
+            //                           0,
+            //                           PAGE_READWRITE | PAGE_NOCACHE);
+
+            // ZwClose(physicalMemoryHandle);
+        }
     }
     else
     {

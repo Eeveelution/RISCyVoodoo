@@ -291,3 +291,149 @@ typedef volatile struct sstregs {       // THE 3D CHIP
     FxU32 reservedJ[8];
     FxU32 reservedK[8];
 } SstRegs;
+
+//sdfdsfsdfsdfsdf
+typedef LONG VP_STATUS;
+#define VIDEOPORT_API
+
+VIDEOPORT_API
+ULONG
+VideoPortSetBusData(
+    PVOID HwDeviceExtension,
+    BUS_DATA_TYPE BusDataType,
+    ULONG SlotNumber,
+    PVOID Buffer,
+    ULONG Offset,
+    ULONG Length
+    );
+
+VIDEOPORT_API
+ULONG
+VideoPortGetBusData(
+    PVOID HwDeviceExtension,
+    BUS_DATA_TYPE BusDataType,
+    ULONG SlotNumber,
+    PVOID Buffer,
+    ULONG Offset,
+    ULONG Length
+    );
+
+typedef struct _VIDEO_ACCESS_RANGE {
+
+    //
+    // Indicates the starting memory address or port number of the range.
+    // This values should be stored before being transformed by
+    // VideoPortGetDeviceBase() which returns the logical address that must
+    // be used by the miniport driver when referencing physical addresses.
+    //
+
+    PHYSICAL_ADDRESS RangeStart;
+
+    //
+    // Indicates the length in bytes, or number of ports in the range. This
+    // value should indicate the range actually decoded by the adapter. For
+    // example, if the adapter uses 7 registers but responds to eight, the
+    // RangeLength should be set to 8.
+
+    ULONG RangeLength;
+
+    //
+    // Indicates if the range is in IO space (TRUE) or in memory space (FALSE).
+    //
+
+    UCHAR RangeInIoSpace;
+
+    //
+    // Indicates if the range should be visible by the Windows display driver.
+    // This is done so that a Windows display driver can access certain
+    // video ports directly. This will only be allowed if the caller has the
+    // required privileges (is a trusted subsystem) to access the range.
+    //
+    // Synchronization of access to ports or memory in the range must be
+    // done explicitly by the miniport driver and the user mode process so
+    // that they both don't try to program the device simultaneously.
+    //
+    // Non visible ranges should include video memory, ROM addresses, etc.
+    // which are not required to program the device for output purposes.
+    //
+    //
+
+    UCHAR RangeVisible;
+
+    //
+    // This field determines if the range can be shared with another device.
+    // The rule should be applied as follow.
+    //
+    // - If the range of memory or IO ports should be "owned" by this driver,
+    //   and that any other driver trying to access this range may cause
+    //   a problem, FALSE should be returned.
+    //
+    // - If the range can be shared with another co-operating device driver,
+    //   then the share field should be set to TRUE.
+    //
+    // As a guideline, the VGA miniport driver will claim all of its resources
+    // as shareable so that it can be used as a VGA compatible device with
+    // any other driver (such as an S3 or XGA.
+    //
+    // Super VGA miniport drivers that implement all the VGA functionality
+    // (declared in the Registry as VGACOMPATIBLE=1) should claim the range
+    // as non-shareable since they don't want the VGA to run at the same time.
+    //
+    // Miniports for cards such as an S3 or XGA that have an XGA on the board
+    // but do not implement the VGA functionality will run with the VGA
+    // miniport loaded and should therefore claim all the resources shared
+    // with the VGA as shareable.
+    //
+    // Miniports for cards that work with a pass-through and that can be
+    // connected to any VGA/SVGA card should not be using any VGA ports or
+    // memory ranges ! ... but if they do they should not claim those
+    // resources since they will cause a conflict in the system because the
+    // SVGA cards will have claimed them as non-shareable ...
+    //
+
+    UCHAR RangeShareable;
+
+} VIDEO_ACCESS_RANGE, *PVIDEO_ACCESS_RANGE;
+
+VIDEOPORT_API
+VP_STATUS
+VideoPortGetAccessRanges(
+    PVOID HwDeviceExtension,
+    ULONG NumRequestedResources,
+    PIO_RESOURCE_DESCRIPTOR RequestedResources OPTIONAL,
+    ULONG NumAccessRanges,
+    PVIDEO_ACCESS_RANGE AccessRanges,
+    PVOID VendorId,
+    PVOID DeviceId,
+    PULONG Slot
+    );
+
+
+
+
+
+
+
+
+
+
+
+    //
+// Flags that can be passed to VideoPortGetDeviceBase or VideoPortMapMemory.
+//
+
+#define VIDEO_MEMORY_SPACE_MEMORY    0x00  // Should not be set by display driver
+#define VIDEO_MEMORY_SPACE_IO        0x01  // Should not be set by display driver
+#define VIDEO_MEMORY_SPACE_USER_MODE 0x02  // Memory pointer for application use
+#define VIDEO_MEMORY_SPACE_DENSE     0x04  // Mapped dense, linearly (ALPHA)
+#define VIDEO_MEMORY_SPACE_P6CACHE   0x08  // P6 MTRR caching (kernel and user)
+
+
+VIDEOPORT_API
+PVOID
+VideoPortGetDeviceBase(
+    PVOID HwDeviceExtension,
+    PHYSICAL_ADDRESS IoAddress,
+    ULONG NumberOfUchars,
+    UCHAR InIoSpace
+    );
