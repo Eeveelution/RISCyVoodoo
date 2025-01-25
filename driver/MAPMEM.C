@@ -67,7 +67,46 @@ FxU32 __stdcall sst1InitRead32(FxU32 *addr)
     return(*addr);
 }
 
+
+
+// # define P6FENCE asm volatile("mb" ::: "memory");
+
+#define SET(d, s)    ((*d) = s)
+
+void sst1InitWrite32(FxU32 *addr, FxU32 data)
+{
+  /* If the client software is using the command fifo then they are
+   * responsible for passing a callback that can be used to put
+   * register writes from the init code into the command fifo that
+   * they are managing. However, some registers cannot be accessed via
+   * the command fifo, and, inconveniently, these are not contiguously
+   * allocated.  
+   */
+//   const FxU32 addrOffset = ((const FxU32)addr - (const FxU32)sst1CurrentBoard->virtAddr[0]);
+//   FxBool directWriteP = ((sst1CurrentBoard == NULL) ||
+//                          (sst1CurrentBoard->set32 == NULL) ||
+//                          sst1CurrentBoard->fbiLfbLocked ||
+//                          (addrOffset == 0x004) ||                            /* intrCtrl */
+//                          ((addrOffset >= 0x1E0) && (addrOffset <= 0x200)) || /* cmdFifoBase ... fbiInit4 */
+//                          ((addrOffset >= 0x208) && (addrOffset <= 0x224)) || /* backPorch ... vSync */
+//                          ((addrOffset >= 0x22C) && (addrOffset <= 0x23C)) || /* dacData ... borderColor */
+//                          ((addrOffset >= 0x244) && (addrOffset <= 0x24C)));  /* fbiInit5 ... fbiInit7 */
+
+//   if (directWriteP) {
+    // __asm {
+    //     mb
+    // }
+    SET(addr, data);
+    // __asm {
+    //     mb
+    // }
+//   } else {
+//     (*sst1CurrentBoard->set32)(addr, data);
+//   }
+}
+
 #define IGET(A)    sst1InitRead32((FxU32 *) &(A))
+#define ISET(A,D)  sst1InitWrite32((FxU32 *) &(A), D)  
 
 void DetectVoodooCvgCard(ULONG *outBus, ULONG *deviceNum, USHORT *deviceId) {
     PCI_SLOT_NUMBER SlotNumber;
@@ -120,8 +159,37 @@ void DetectVoodooCvgCard(ULONG *outBus, ULONG *deviceNum, USHORT *deviceId) {
     end:;
 }
 
+int sst1InitIdleFBINoNOP(SstRegs *sst)
+{
+    FxU32 cntr;
+
+    if(!sst)
+        return(0);
+
+    // ISET(sst->nopCMD, 0x0);
+    cntr = 0;
+    while(1) {
+        if(!(IGET(sst->status) & SST_FBI_BUSY)) {
+            if(++cntr > 5)
+                break;
+        } else
+            cntr = 0;
+    }
+    return(1);
+}
+
+
 static void* VOODOOPTR;
 static void* MapRegisterBase;   
+
+
+void PrintVoodooStatus(ULONG status) {
+    DbgPrint("VRETRACE: %d | ", status & SST_VRETRACE);
+    DbgPrint("FBI_BUSY: %d | ", status & SST_FBI_BUSY);
+    DbgPrint("TMU_BUSY: %d | ", status & SST_TMU_BUSY);
+    DbgPrint("SST_BUSY: %d | ", status & SST_TREX_BUSY);
+    DbgPrint("FIFO_LVL: %d\n", status & SST_FIFOLEVEL);
+}
 
 NTSTATUS
 DriverEntry(
@@ -313,7 +381,91 @@ Return Value:
             DbgPrint("baseAddr: 0x%x\n", baseAddr.LowPart);
             DbgPrint("endAddr: 0x%x\n", endAddr.LowPart);
 
-            DbgPrint("SST Status: %d\n", ((SstRegs*)mappedAddress)->status);
+// #define STALL_STATUS() DbgPrint("Status: 0x%x", IGET(sst->status)); DbgPrint("Status: 0x%x", IGET(sst->status)); DbgPrint("Status: 0x%x", IGET(sst->status))
+#define STALL_STATUS() PrintVoodooStatus(IGET(sst->status)); PrintVoodooStatus(IGET(sst->status)); PrintVoodooStatus(IGET(sst->status))
+            {
+                SstRegs* sst = (SstRegs*) mappedAddress;
+                ULONG treshold = 0x8;
+                ULONG clockDelay = 0x8;
+
+
+                if(IGET(sst->fbiInit1) & SST_EN_SCANLINE_INTERLEAVE) {
+                    DbgPrint("SLI active!\n");
+                } else {
+                    DbgPrint("SLI not active!\n");
+                }
+
+                //Enable writes to FBIINIT registers
+                //Do not allow writes into the pci fifo until everything is reset
+                DbgPrint("Enabling writes to FBIINIT and reseting bus snooping\n");
+                {
+                    ULONG initWriteEnable = BIT(0);
+                    ULONG snoopDefault = 0;
+
+                    i = HalSetBusDataByOffset(PCIConfiguration, voodooBus, slotNumber.u.AsULONG, &initWriteEnable, 0x40, 4); DbgPrint("Init Write: %d\n", i);
+                    i = HalSetBusDataByOffset(PCIConfiguration, voodooBus, slotNumber.u.AsULONG, &snoopDefault, 0x44, 4); DbgPrint("Snoop0: %d\n", i);
+                    i = HalSetBusDataByOffset(PCIConfiguration, voodooBus, slotNumber.u.AsULONG, &snoopDefault, 0x48, 4); DbgPrint("Snoop1: %d\n", i);
+
+                    STALL_STATUS();
+                }
+
+                //Adjust TREX to FBI FIFO
+                {
+                    DbgPrint("fbiInit3 happening\n");
+
+                    ISET(sst->fbiInit3,
+                        (SST_FBIINIT3_DEFAULT & ~(SST_FT_CLK_DEL_ADJ | SST_TF_FIFO_THRESH)) |
+                        (clockDelay << SST_FT_CLK_DEL_ADJ_SHIFT) |
+                        (treshold << SST_TF_FIFO_THRESH_SHIFT)
+                    );
+
+                    STALL_STATUS();
+                }
+
+                DbgPrint("Resetting graphics and video units\n");
+
+                ISET(sst->fbiInit1, IGET(sst->fbiInit1) | SST_VIDEO_RESET);
+
+                STALL_STATUS();
+                
+                DbgPrint("fbiInit0\n");
+
+                ISET(sst->fbiInit0, IGET(sst->fbiInit0) | (SST_GRX_RESET | SST_PCI_FIFO_RESET));
+
+                DbgPrint("waiting...\n");
+
+                sst1InitIdleFBINoNOP(sst);
+
+                DbgPrint("unresetting fbiInit0\n");
+
+                ISET(sst->fbiInit0, IGET(sst->fbiInit0) & ~SST_GRX_RESET);
+                sst1InitIdleFBINoNOP(sst);
+
+                DbgPrint("Resetting fbi registers\n");
+                // Reset all FBI and TREX Init registers
+                ISET(sst->fbiInit0, SST_FBIINIT0_DEFAULT);
+                ISET(sst->fbiInit1, SST_FBIINIT1_DEFAULT);
+                ISET(sst->fbiInit2, SST_FBIINIT2_DEFAULT);
+                ISET(sst->fbiInit3,
+                (SST_FBIINIT3_DEFAULT & ~(SST_FT_CLK_DEL_ADJ | SST_TF_FIFO_THRESH)) |
+                (clockDelay << SST_FT_CLK_DEL_ADJ_SHIFT) |
+                (treshold << SST_TF_FIFO_THRESH_SHIFT));
+                ISET(sst->fbiInit4, SST_FBIINIT4_DEFAULT);
+                ISET(sst->fbiInit5, SST_FBIINIT5_DEFAULT);
+                ISET(sst->fbiInit6, SST_FBIINIT6_DEFAULT);
+                ISET(sst->fbiInit7, SST_FBIINIT7_DEFAULT);
+                sst1InitIdleFBINoNOP(sst);  // Wait until init regs are reset
+
+                //enable writes and pushes to fifo
+                {
+                    ULONG cfg = SST_INITWR_EN | SST_PCI_FIFOWR_EN;
+
+                    HalSetBusDataByOffset(PCIConfiguration, voodooBus, slotNumber.u.AsULONG, &cfg, 0x40, 4);
+                }
+            }
+
+             
+            // DbgPrint("SST Status: %d\n", ((SstRegs*)mappedAddress)->init);
 
             // ntStatus = ZwOpenSection (&physicalMemoryHandle,
             //                   SECTION_ALL_ACCESS,
