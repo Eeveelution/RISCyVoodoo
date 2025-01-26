@@ -1,6 +1,9 @@
 {
     "files.associations": {
         "MAPMEM.C": "cpp",
-        "MAPTEST.C": "cpp"
+        "MAPTEST.C": "cpp",
+        "all.h": "c",
+        "funcdefines.h": "c",
+        "3dfx.h": "c"
     }
 }

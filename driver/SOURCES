@@ -3,4 +3,4 @@ TARGETPATH=$(BASEDIR)\lib
 TARGETTYPE=DRIVER
 
 TARGETLIBS=$(BASEDIR)\lib\*\$(DDKBUILDENV)\videoprt.lib 
-SOURCES=
+SOURCES=DriverEntry.c CardDetection.C CvgDAC.c CvgInitialization.c
