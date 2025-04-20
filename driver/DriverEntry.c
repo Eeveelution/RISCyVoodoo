@@ -28,10 +28,9 @@ NTSTATUS MapMemMapTheMemory(
 );
 
 static void* VOODOOPTR;
-static void* MapRegisterBase;   
 
 
-
+static PHYSICAL_ADDRESS voodooBaseAddr;
 
 
 NTSTATUS
@@ -220,6 +219,19 @@ Return Value:
 
             DbgPrint("baseAddr: 0x%x\n", baseAddr.LowPart);
             DbgPrint("endAddr: 0x%x\n", endAddr.LowPart);
+
+            {
+                LARGE_INTEGER endMinusBase;
+                endMinusBase = RtlLargeIntegerSubtract (endAddr, baseAddr);
+
+                DbgPrint("Mapped length: %d\n", endMinusBase);
+            }
+
+            VOODOOPTR = mappedAddress;
+
+            voodooBaseAddr = baseAddr;
+
+            // return;
 
             InitializeCvg(voodoo, (SstRegs*) mappedAddress);   
         }
@@ -461,232 +473,101 @@ MapMemMapTheMemory(
     IN ULONG          InputBufferLength,
     IN ULONG          OutputBufferLength
     )
-/*++
-
-Routine Description:
-
-    Given a physical address, maps this address into a user mode process's
-    address space
-
-Arguments:
-
-    DeviceObject       - pointer to a device object
-
-    IoBuffer           - pointer to the I/O buffer
-
-    InputBufferLength  - input buffer length
-
-    OutputBufferLength - output buffer length
-
-Return Value:
-
-    STATUS_SUCCESS if sucessful, otherwise
-    STATUS_UNSUCCESSFUL,
-    STATUS_INSUFFICIENT_RESOURCES,
-    (other STATUS_* as returned by kernel APIs)
-
---*/
 {
-
-    PPHYSICAL_MEMORY_INFO ppmi = (PPHYSICAL_MEMORY_INFO) IoBuffer;
-
-    INTERFACE_TYPE     interfaceType;
-    ULONG              busNumber;
-    PHYSICAL_ADDRESS   physicalAddress;
-    ULONG              length;
+    // INTERFACE_TYPE     interfaceType;
+    // ULONG              busNumber;
+    // PHYSICAL_ADDRESS   physicalAddress;
+    ULONG              length = 16 * 1024 * 1024;
     UNICODE_STRING     physicalMemoryUnicodeString;
     OBJECT_ATTRIBUTES  objectAttributes;
     HANDLE             physicalMemoryHandle  = NULL;
     PVOID              PhysicalMemorySection = NULL;
-    ULONG              inIoSpace, inIoSpace2;
+    // ULONG              inIoSpace, inIoSpace2;
     NTSTATUS           ntStatus;
-    PHYSICAL_ADDRESS   physicalAddressBase;
-    PHYSICAL_ADDRESS   physicalAddressEnd;
+    // PHYSICAL_ADDRESS   physicalAddressBase;
+    // PHYSICAL_ADDRESS   physicalAddressEnd;
     PHYSICAL_ADDRESS   viewBase;
-    PHYSICAL_ADDRESS   mappedLength;
-    BOOLEAN            translateBaseAddress;
-    BOOLEAN            translateEndAddress;
+    // PHYSICAL_ADDRESS   mappedLength;
+    // BOOLEAN            translateBaseAddress;
+    // BOOLEAN            translateEndAddress;
     PVOID              virtualAddress;
 
-
-
-    if ( ( InputBufferLength  < sizeof (PHYSICAL_MEMORY_INFO) ) ||
-         ( OutputBufferLength < sizeof (PVOID) ) )
-    {
-       DbgPrint (("MAPMEM.SYS: Insufficient input or output buffer\n"));
-
-       ntStatus = STATUS_INSUFFICIENT_RESOURCES;
-
-       goto done;
-    }
-
-    interfaceType          = ppmi->InterfaceType;
-    busNumber              = ppmi->BusNumber;
-    physicalAddress        = ppmi->BusAddress;
-    inIoSpace = inIoSpace2 = ppmi->AddressSpace;
-    length                 = ppmi->Length;
-
-    *((PVOID *) IoBuffer) = VOODOOPTR;
-
-    return;
-
-
-    //
-    // Get a pointer to physical memory...
-    //
-    // - Create the name
-    // - Initialize the data to find the object
-    // - Open a handle to the oject and check the status
-    // - Get a pointer to the object
-    // - Free the handle
-    //
+    // UNICODE_STRING     physicalMemoryUnicodeString;
 
     RtlInitUnicodeString (&physicalMemoryUnicodeString,
-                          L"\\Device\\PhysicalMemory");
+        L"\\Device\\PhysicalMemory");
+
+    DbgPrint("initializing attribs\n");
 
     InitializeObjectAttributes (&objectAttributes,
-                                &physicalMemoryUnicodeString,
-                                OBJ_CASE_INSENSITIVE,
-                                (HANDLE) NULL,
-                                (PSECURITY_DESCRIPTOR) NULL);
+                            &physicalMemoryUnicodeString,
+                            OBJ_CASE_INSENSITIVE,
+                            (HANDLE) NULL,
+                            (PSECURITY_DESCRIPTOR) NULL);
+
+    DbgPrint("opening section\n");
 
     ntStatus = ZwOpenSection (&physicalMemoryHandle,
-                              SECTION_ALL_ACCESS,
-                              &objectAttributes);
+                            SECTION_ALL_ACCESS,
+                            &objectAttributes);
 
     if (!NT_SUCCESS(ntStatus))
     {
         DbgPrint (("MAPMEM.SYS: ZwOpenSection failed\n"));
 
-        goto done;
+        return;
     }
+
+    DbgPrint("ObReferenceObjectByHandle\n");
 
     ntStatus = ObReferenceObjectByHandle (physicalMemoryHandle,
-                                          SECTION_ALL_ACCESS,
-                                          (POBJECT_TYPE) NULL,
-                                          KernelMode,
-                                          &PhysicalMemorySection,
-                                          (POBJECT_HANDLE_INFORMATION) NULL);
+                                        SECTION_ALL_ACCESS,
+                                        (POBJECT_TYPE) NULL,
+                                        KernelMode,
+                                        &PhysicalMemorySection,
+                                        (POBJECT_HANDLE_INFORMATION) NULL);
 
-    if (!NT_SUCCESS(ntStatus))
-    {
+    if (!NT_SUCCESS(ntStatus)) {
         DbgPrint (("MAPMEM.SYS: ObReferenceObjectByHandle failed\n"));
 
-        goto close_handle;
+        return;
     }
 
+    DbgPrint("viewBase = 0x%x\n", voodooBaseAddr);
 
-    //
-    // Initialize the physical addresses that will be translated
-    //
-
-    physicalAddressEnd = RtlLargeIntegerAdd (physicalAddress,
-                                             RtlConvertUlongToLargeInteger(
-                                             length));
-
-    //
-    // Translate the physical addresses.
-    //
-
-    translateBaseAddress =
-        HalTranslateBusAddress (interfaceType,
-                                busNumber,
-                                physicalAddress,
-                                &inIoSpace,
-                                &physicalAddressBase);
-
-    translateEndAddress =
-        HalTranslateBusAddress (interfaceType,
-                                busNumber,
-                                physicalAddressEnd,
-                                &inIoSpace2,
-                                &physicalAddressEnd);
-
-    DbgPrint("inIoSpace: %d\n", inIoSpace);
-    DbgPrint("inIoSpace2: %d\n", inIoSpace2);
-
-    if ( !(translateBaseAddress && translateEndAddress) )
-    {
-        DbgPrint (("MAPMEM.SYS: HalTranslatephysicalAddress failed\n"));
-
-        ntStatus = STATUS_UNSUCCESSFUL;
-
-        goto close_handle;
-    }
-
-    //
-    // Calculate the length of the memory to be mapped
-    //
-
-    mappedLength = RtlLargeIntegerSubtract (physicalAddressEnd,
-                                            physicalAddressBase);
+    viewBase = voodooBaseAddr;
 
 
     //
-    // If the mappedlength is zero, somthing very weird happened in the HAL
-    // since the Length was checked against zero.
+    // Let ZwMapViewOfSection pick an address
     //
 
-    if (mappedLength.LowPart == 0)
-    {
-        DbgPrint (("MAPMEM.SYS: mappedLength.LowPart == 0\n"));
+    virtualAddress = NULL;
 
-        ntStatus = STATUS_UNSUCCESSFUL;
-
-        goto close_handle;
-    }
-
-    length = mappedLength.LowPart;
 
 
     //
-    // If the address is in io space, just return the address, otherwise
-    // go through the mapping mechanism
+    // Map the section
     //
 
-    // if (inIoSpace)
-    // {
-    //     *((PVOID *) IoBuffer) = (PVOID) physicalAddressBase.LowPart;
-    // }
+    DbgPrint("MapViewOfSection\n");
 
-    // else
-    {
-        //
-        // initialize view base that will receive the physical mapped
-        // address after the MapViewOfSection call.
-        //
+    ntStatus = ZwMapViewOfSection (physicalMemoryHandle,
+                                    (HANDLE) -1,
+                                    &virtualAddress,
+                                    0L,
+                                    length,
+                                    &viewBase,
+                                    &length,
+                                    ViewShare,
+                                    0,
+                                    PAGE_READWRITE | PAGE_NOCACHE);
 
-        viewBase = physicalAddressBase;
-
-
-        //
-        // Let ZwMapViewOfSection pick an address
-        //
-
-        virtualAddress = NULL;
-
-
-
-        //
-        // Map the section
-        //
-
-        ntStatus = ZwMapViewOfSection (physicalMemoryHandle,
-                                       (HANDLE) -1,
-                                       &virtualAddress,
-                                       0L,
-                                       length,
-                                       &viewBase,
-                                       &length,
-                                       ViewShare,
-                                       0,
-                                       PAGE_READWRITE | PAGE_NOCACHE);
-
-        if (!NT_SUCCESS(ntStatus))
+    if (!NT_SUCCESS(ntStatus))
         {
             DbgPrint (("MAPMEM.SYS: ZwMapViewOfSection failed\n"));
 
-            goto close_handle;
+            return;
         }
 
         //
@@ -694,30 +575,13 @@ Return Value:
         // nearest 64 K boundary. Now return a virtual address that sits where
         // we wnat by adding in the offset from the beginning of the section.
         //
-        {
-            ULONG virtAddrAsUlong = (ULONG) virtualAddress;
 
-            virtAddrAsUlong += (ULONG)physicalAddressBase.LowPart -
-                               (ULONG)viewBase.LowPart;
+        DbgPrint("Virtual Address pre-adding: 0x%x\n", virtualAddress);
+        
+        
+        (ULONG) virtualAddress += (ULONG)voodooBaseAddr.LowPart - (ULONG)viewBase.LowPart;
 
-            *((PVOID *) IoBuffer) = (PVOID*) virtAddrAsUlong;
-        }
+        DbgPrint("Virtual Address post-adding: 0x%x\n", virtualAddress);
 
-
-
-    }
-
-    ntStatus = STATUS_SUCCESS;
-
-
-
-close_handle:
-
-    ZwClose (physicalMemoryHandle);
-
-
-
-done:
-
-    return ntStatus;
+        *((PVOID *) IoBuffer) = virtualAddress;
 }

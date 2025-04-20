@@ -28,25 +28,38 @@ Revision History:
 #include "stdlib.h"
 #include "ioaccess.h"
 
-
-//
-// A couple of typedefs mapmem.h depends on from  MINIPORT.H & NTDDK.H.
-//
-
-typedef enum _INTERFACE_TYPE
-{
-    Internal,
-    Isa,
-    Eisa,
-    MicroChannel,
-    TurboChannel,
-    MaximumInterfaceType
-} INTERFACE_TYPE, *PINTERFACE_TYPE;
-
 typedef LARGE_INTEGER PHYSICAL_ADDRESS;
 
-#include "mapmem.h"
+#include "3dfx/cvgregs.h"
+#include "3dfx/cvgdefs.h"
 
+//
+// Define the various device type values.  Note that values used by Microsoft
+// Corporation are in the range 0-32767, and 32768-65535 are reserved for use
+// by customers.
+//
+
+#define FILE_DEVICE_MAPMEM  0x00008000
+
+
+
+//
+// Macro definition for defining IOCTL and FSCTL function control codes.  Note
+// that function codes 0-2047 are reserved for Microsoft Corporation, and
+// 2048-4095 are reserved for customers.
+//
+
+#define MAPMEM_IOCTL_INDEX  0x800
+
+#define IOCTL_MAPMEM_MAP_USER_PHYSICAL_MEMORY   CTL_CODE(FILE_DEVICE_MAPMEM , \
+    MAPMEM_IOCTL_INDEX,  \
+    METHOD_BUFFERED,     \
+    FILE_ANY_ACCESS)
+
+#define IOCTL_MAPMEM_UNMAP_USER_PHYSICAL_MEMORY CTL_CODE(FILE_DEVICE_MAPMEM,  \
+    MAPMEM_IOCTL_INDEX+1,\
+    METHOD_BUFFERED,     \
+    FILE_ANY_ACCESS)
 
 
 int
@@ -72,61 +85,15 @@ Return Value:
 --*/
 {
     HANDLE               hDriver;
-    PHYSICAL_MEMORY_INFO pmi;
     PVOID                pPartyMem;
     DWORD                cbReturned;
-    ULONG                length;
-    char                 *aInterfaceType[] =  {"Internal",
-                                               "Isa",
-                                               "Eisa",
-                                               "MicroChannel",
-                                               "TurboChannel" };
-    if (argc < 4)
-    {
-        //
-        // Display usage message
-        //
-
-        printf ("\nUsage: maptest <InterfaceType> <BusNumber> <BusAddress> <AddressSpace> <length>\n\n");
-        printf ("\t<InterfaceType>: 1 = Isa, 2 = Eisa, 3 = Microchannel, 4 = TurboChannel\n");
-        printf ("\t<BusNumber>    : bus number, i.e. 0 for standard x86 ISA systems\n");
-        printf ("\t<BusAddress>   : physical address to map (hex)\n");
-        printf ("\t<AddressSpace> : 0 = memory, 1 = I/O\n");
-        printf ("\t<length>       : length of section to map (hex)\n\n");
-
-        printf ("\tExample: 'maptest 1 0 0xa0000 0 0x2000'\n");
-        return 0;
-    }
-
-
-
-    //
-    // Parse the args
-    //
-
-    pmi.InterfaceType       = (INTERFACE_TYPE) atoi (argv[1]);
-    pmi.BusNumber           = (ULONG)          atoi (argv[2]);
-    pmi.BusAddress.HighPart = (LONG)           0x00000000;
-    pmi.AddressSpace        = (LONG)           atoi (argv[4]);
-
-    sscanf (argv[3], "%x", &pmi.BusAddress.LowPart);
-    sscanf (argv[5], "%x", &pmi.Length);
-
-    printf ("\tInterfaceType = %s\n",   aInterfaceType[pmi.InterfaceType]);
-    printf ("\tBusNumber     = %d\n",   pmi.BusNumber);
-    printf ("\tBusAddress    = 0x%x\n", pmi.BusAddress.LowPart, pmi.BusAddress.LowPart);
-    printf ("\tAddressSpace  = %d\n",   pmi.AddressSpace);
-    printf ("\tLength        = 0x%x\n", pmi.Length, pmi.Length);
-
-    length = pmi.Length;
-
 
 
     //
     // Try to open the device
     //
 
-    if ((hDriver = CreateFile("\\\\.\\MAPMEM",
+    if ((hDriver = CreateFileA("\\\\.\\MAPMEM",
                               GENERIC_READ | GENERIC_WRITE,
                               0,
                               NULL,
@@ -153,8 +120,8 @@ Return Value:
 
     if (DeviceIoControl (hDriver,
                          (DWORD) IOCTL_MAPMEM_MAP_USER_PHYSICAL_MEMORY,
-                         &pmi,
-                         sizeof(PHYSICAL_MEMORY_INFO),
+                         0,
+                         0,
                          &pPartyMem,
                          sizeof(PVOID),
                          &cbReturned,
@@ -169,14 +136,17 @@ Return Value:
 
         if (pPartyMem)
         {
+            SstRegs* sst = (SstRegs*) pPartyMem;
+            
             printf("pPartyMem: 0x%x\n", pPartyMem);
-            printf("SST Status: %d\n", *((unsigned int*)pPartyMem));
+            printf("SST Status: %d\n", sst->status);
+            // printf("SLI: %d\n", sst->fbiInit1 & SST_EN_SCANLINE_INTERLEAVE);
 
             //
             // Unmap the memory
             //
 
-            DeviceIoControl (hDriver,
+            /*DeviceIoControl (hDriver,
                              (DWORD) IOCTL_MAPMEM_UNMAP_USER_PHYSICAL_MEMORY,
                              &pPartyMem,
                              sizeof(PVOID),
@@ -184,7 +154,7 @@ Return Value:
                              0,
                              &cbReturned,
                              0
-                             );
+                             );*/
         }
 
         else
